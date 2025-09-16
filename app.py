@@ -172,7 +172,7 @@ Eres un parser estricto. Extrae del texto los campos en JSON con estas claves:
 Responde SOLO JSON válido sin comentarios.
 
 Texto:
-"""{block}"""
+'''{block}'''
 """
 
         resp = client.chat.completions.create(
