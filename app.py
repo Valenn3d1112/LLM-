@@ -110,6 +110,29 @@ def split_name(full_name: str) -> (str, str):
     apellido = parts[-1]
     return nombre, apellido
 
+def _extract_unit_note(direccion: str):
+    """
+    Separa 'depto/oficina' del final de la dirección.
+    Devuelve (direccion_sin_unidad, nota_corta) donde nota_corta es por ejemplo 'Depto 1205' u 'Of. 206'.
+    """
+    if not direccion:
+        return "", ""
+    s = direccion.strip()
+
+    pat = re.compile(r"""^(?P<base>.*?)(?:[,;\- ]+)?
+                         (?:(?P<tag>depto|dpto|departamento|oficina|of\.?|of)\s*
+                         (?P<num>[A-Za-z0-9\-]+))\s*$""", re.IGNORECASE | re.X)
+    m = pat.match(s)
+    if m:
+        base = m.group('base').strip(' ,;-')
+        tag = m.group('tag').lower().replace('departamento','depto')
+        tag_norm = 'Depto' if tag in ('depto','dpto') else 'Of.'
+        num = m.group('num')
+        note = f"{tag_norm} {num}"
+        return base, note
+
+    return s, ""
+
 def extract_by_labels(text: str) -> Dict[str, str]:
     patterns = {
         "nombre": r"(?:^|\n)\s*(?:nombre|razon\s*social)\s*:\s*(.+)",
@@ -141,13 +164,18 @@ def parse_block_rule_based(block: str) -> Dict[str, Any]:
     telefono = normalize_phone_cl(telefono_raw)
     comuna = match_comuna(comuna_raw, threshold=st.session_state.get("umbral_coincidencia_comuna", DEFAULTS["umbral_coincidencia_comuna"]))
 
+    base_dir, unit_note = _extract_unit_note(direccion_raw.strip())
+    indic = indic_raw.strip()
+    if unit_note:
+        indic = (indic + ("; " if indic else "") + unit_note)
+
     return {
         "Nombre": nombre,
         "Apellido": apellido,
         "Teléfono": telefono,
-        "Dirección": direccion_raw.strip(),
+        "Dirección": base_dir,
         "Comuna": comuna,
-        "Indicaciones": indic_raw.strip(),
+        "Indicaciones": indic,
         "ID Interno": id_int_raw.strip(),
         "Correo": correo,
     }
@@ -187,13 +215,16 @@ Texto:
         data = json.loads(content)
 
         nombre, apellido = split_name(data.get("nombre_completo",""))
+        base_dir, unit_note = _extract_unit_note(data.get("direccion","").strip())
+        indic = (data.get("indicaciones","").strip() + ("; " if data.get("indicaciones","").strip() else "") + unit_note) if unit_note else data.get("indicaciones","").strip()
+
         return {
             "Nombre": nombre,
             "Apellido": apellido,
             "Teléfono": data.get("telefono",""),
-            "Dirección": data.get("direccion",""),
+            "Dirección": base_dir,
             "Comuna": data.get("comuna",""),
-            "Indicaciones": data.get("indicaciones",""),
+            "Indicaciones": indic,
             "ID Interno": data.get("id_interno",""),
             "Correo": data.get("correo",""),
         }
@@ -224,7 +255,10 @@ def process_text(text: str, use_llm: bool, contenido_paquete: str, bultos: int) 
         data["cantidad de bultos"] = bultos
 
         if not data.get("ID Interno"):
-            data["ID Interno"] = f"KOA-{int(time.time())}-{idx:03d}"
+            import random, string
+            letters = "".join(random.choice(string.ascii_letters) for _ in range(2))
+            last4 = re.sub(r"\D", "", data.get("Teléfono",""))[-4:] or "0000"
+            data["ID Interno"] = f"{letters}{last4}"
 
         row = {col: data.get(col, "") for col in LMT_COLUMNS}
         rows.append(row)
@@ -233,11 +267,12 @@ def process_text(text: str, use_llm: bool, contenido_paquete: str, bultos: int) 
     return df
 
 def to_excel_template(df: pd.DataFrame) -> bytes:
-    with pd.ExcelWriter(io.BytesIO(), engine="openpyxl") as writer:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Listado de Direcciones", index=False)
         writer.book["Listado de Direcciones"].sheet_properties.tabColor = "00BFA6"
-        writer.save()
-        return writer._handles.handle.getvalue()
+    buffer.seek(0)
+    return buffer.getvalue()
 
 def download_button_xlsx(binary, filename: str, label: str):
     st.download_button(
@@ -325,6 +360,12 @@ with tab2:
                     for orig, std in cols_std.items():
                         if std:
                             data[std] = row.get(orig, "")
+                    # Normalizar dirección/unidad
+                    base_dir, unit_note = _extract_unit_note(str(data.get("Dirección","")).strip())
+                    data["Dirección"] = base_dir
+                    if unit_note:
+                        data["Indicaciones"] = (str(data.get("Indicaciones","")).strip() + ("; " if str(data.get("Indicaciones","")).strip() else "") + unit_note)
+
                     data.setdefault("Contenido del paquete", contenido_paquete)
                     data.setdefault("cantidad de bultos", bultos)
                     data.setdefault("Nombre","")
@@ -333,7 +374,10 @@ with tab2:
                     data["Correo"] = validate_email_safe(str(data.get("Correo","")))
                     data["Comuna"] = match_comuna(str(data.get("Comuna","")))
                     if not data.get("ID Interno"):
-                        data["ID Interno"] = f"KOA-{int(time.time())}"
+                        import random, string
+                        letters = "".join(random.choice(string.ascii_letters) for _ in range(2))
+                        last4 = re.sub(r"\D", "", data.get("Teléfono",""))[-4:] or "0000"
+                        data["ID Interno"] = f"{letters}{last4}"
                     out_rows.append({col: data.get(col, "") for col in LMT_COLUMNS})
 
                 df = pd.DataFrame(out_rows, columns=LMT_COLUMNS)
