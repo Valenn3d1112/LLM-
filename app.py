@@ -141,7 +141,7 @@ def llm_parse_block(block: str) -> Optional[Dict[str, Any]]:
             model=st.secrets.get("openai_model", "gpt-4o-mini"),
             messages=[{"role":"system","content":"Devuelve únicamente JSON válido. Sin explicaciones."},
                       {"role":"user","content":prompt}],
-            temperature=0
+            temperature=1
         )
         data = json.loads(resp.choices[0].message.content.strip())
         nombre, apellido = split_name(data.get("nombre_completo",""))
